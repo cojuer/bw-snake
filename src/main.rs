@@ -35,11 +35,23 @@ pub struct Tile;
 #[derive(Component)]
 pub struct Collision;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Up,
     Down,
     Left,
     Right,
+}
+
+impl Direction {
+    fn opposite(&self) -> Self {
+        match self {
+            Self::Up => Self::Down,
+            Self::Down => Self::Up,
+            Self::Right => Self::Left,
+            Self::Left => Self::Right,
+        }
+    }
 }
 
 pub struct Scene {
@@ -225,12 +237,17 @@ fn control_snake(mut snake_query: Query<&mut SnakeMeta>, inputs: Res<Input<KeyCo
     let mut snake_meta = snake_query.single_mut();
 
     if inputs.is_changed() {
+        let mut tmp_dir = snake_meta.dir;
         match inputs.get_just_released().next() {
-            Some(KeyCode::Up | KeyCode::W) => snake_meta.dir = Direction::Up,
-            Some(KeyCode::Down | KeyCode::S) => snake_meta.dir = Direction::Down,
-            Some(KeyCode::Left | KeyCode::A) => snake_meta.dir = Direction::Left,
-            Some(KeyCode::Right | KeyCode::D) => snake_meta.dir = Direction::Right,
+            Some(KeyCode::Up | KeyCode::W) => tmp_dir = Direction::Up,
+            Some(KeyCode::Down | KeyCode::S) => tmp_dir = Direction::Down,
+            Some(KeyCode::Left | KeyCode::A) => tmp_dir = Direction::Left,
+            Some(KeyCode::Right | KeyCode::D) => tmp_dir = Direction::Right,
             _ => {}
+        }
+
+        if tmp_dir != snake_meta.dir.opposite() {
+            snake_meta.dir = tmp_dir;
         }
     }
 }
