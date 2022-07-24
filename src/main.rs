@@ -201,18 +201,16 @@ fn move_snake(
 }
 
 fn check_snake_collides(
-    snake_query: Query<(Entity, &SnakeMeta, &Pos)>,
-    collision_query: Query<(Entity, &Pos, Option<&Age>), With<Collision>>,
+    snake_query: Query<(Entity, &SnakeMeta, &Pos), Changed<Pos>>,
+    collision_query: Query<(Entity, &Pos), With<Collision>>,
 ) {
-    let (snake_id, snake_meta, snake_pos) = snake_query.single();
-    for (ent_id, ent_pos, opt_age) in collision_query.iter() {
-        // TODO: probably move system into another stage
-        // so that tail despawns before we check collision
-        if let Some(age) = opt_age {
-            if age.0 + 1 == snake_meta.len {
-                continue;
-            }
-        }
+    if snake_query.is_empty() {
+        // currently system runs each tick and we are only interested in ticks
+        // where snake moved
+        return;
+    }
+    let (snake_id, _, snake_pos) = snake_query.single();
+    for (ent_id, ent_pos) in collision_query.iter() {
         if snake_pos == ent_pos && snake_id != ent_id {
             println!("failed");
         }
@@ -252,6 +250,8 @@ fn control_snake(mut snake_query: Query<&mut SnakeMeta>, inputs: Res<Input<KeyCo
     }
 }
 
+static POST_CMD: &str = "post_cmd";
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
@@ -267,14 +267,14 @@ fn main() {
             SystemSet::new()
                 .with_run_criteria(FixedTimestep::step(1.0))
                 .with_system(move_snake)
-                .with_system(despawn_old.after(move_snake))
-                .with_system(check_snake_collides.after(despawn_old)),
+                .with_system(despawn_old.after(move_snake)),
         )
+        .add_stage_after(CoreStage::Update, POST_CMD, SystemStage::parallel())
+        .add_system_to_stage(POST_CMD, check_snake_collides)
         // Moving snake is implemented by spawning body segments, we need
         // either to set correct transform or to update transform after
         // spawning. As spawning happens in the end of the stage we run system
         // updating transforms in a new stage.
-        // TODO: add custom stage between Update and PostUpdate
-        .add_system_to_stage(CoreStage::PostUpdate, update_position)
+        .add_system_to_stage(POST_CMD, update_position)
         .run();
 }
