@@ -1,9 +1,9 @@
 use super::components::{Direction, *};
-use bevy::core::FixedTimestep;
 use bevy::prelude::*;
 use rand::prelude::*;
 use std::collections::{HashMap, HashSet};
 
+#[derive(Resource)]
 pub struct Scene {
     pub x_size: u32,
     pub y_size: u32,
@@ -11,8 +11,21 @@ pub struct Scene {
 
 pub struct GamePlugin;
 
-static POST_SNAKE: &str = "post_snake";
-static POST_ALL: &str = "post_all";
+#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemSet)]
+#[system_set(base)]
+
+pub enum PostSnake {
+    Parallel,
+    CommandFlush
+}
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemSet)]
+#[system_set(base)]
+
+pub enum PostAll {
+    Parallel,
+    CommandFlush
+}
 
 impl GamePlugin {
     fn eat_food(
@@ -186,42 +199,49 @@ impl GamePlugin {
     fn spawn_snake(mut commands: Commands, asset_server: Res<AssetServer>) {
         let snake_image = asset_server.load("images/snake.png");
         commands
-            .spawn()
-            .insert(Snake)
-            .insert(SnakeMeta {
-                len: 4,
-                dir: Direction::Right,
-                prev_dir: Direction::Right,
-            })
-            .insert(Collision)
-            .insert(Pos { x: 5, y: 5 })
-            .insert_bundle(SpriteBundle {
-                texture: snake_image,
-                ..Default::default()
-            });
+            .spawn((
+                Snake,
+                SnakeMeta {
+                    len: 4,
+                    dir: Direction::Right,
+                    prev_dir: Direction::Right,
+                },
+                Collision,
+                Pos { x: 5, y: 5 },
+                SpriteBundle {
+                    texture: snake_image,
+                    ..Default::default()
+                }
+            ));
     }
 }
 
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
-        app.add_startup_system(Self::create_basic_scene)
-            .add_startup_system(Self::spawn_snake)
-            .add_system(bevy::input::system::exit_on_esc_system)
-            .add_system(Self::control_snake.before(Self::move_snake))
-            .add_system_set(
-                SystemSet::new()
-                    .with_run_criteria(FixedTimestep::step(0.2))
-                    .with_system(Self::move_snake)
-                    .with_system(Self::eat_food.after(Self::move_snake))
-                    .with_system(Self::despawn_old.after(Self::eat_food)),
+        app
+            .configure_sets(
+                (
+                    CoreSet::UpdateFlush,
+                    PostSnake::Parallel,
+                    PostSnake::CommandFlush,
+                    PostAll::Parallel,
+                    PostAll::CommandFlush,
+                    CoreSet::PostUpdate,
+                ).chain()
             )
+            .add_startup_system(Self::create_basic_scene)
+            .add_startup_system(Self::spawn_snake)
+            .insert_resource(FixedTime::new_from_secs(0.2))
+            .add_system(bevy::window::close_on_esc)
+            .add_system(Self::control_snake.before(Self::move_snake))
+            .add_system(Self::move_snake.in_schedule(CoreSchedule::FixedUpdate))
+            .add_system(Self::eat_food.after(Self::move_snake).in_schedule(CoreSchedule::FixedUpdate))
+            .add_system(Self::despawn_old.after(Self::eat_food).in_schedule(CoreSchedule::FixedUpdate))
             // snake segments fully [de]spawn in the end of update stage,
             // so we can safely spawn new objects only in new stage
-            .add_stage_after(CoreStage::Update, POST_SNAKE, SystemStage::parallel())
-            .add_system_to_stage(POST_SNAKE, Self::respawn_food)
-            .add_system_to_stage(POST_SNAKE, Self::check_snake_collides)
-            .add_stage_after(POST_SNAKE, POST_ALL, SystemStage::parallel())
-            .add_system_to_stage(POST_ALL, Self::update_position);
+            .add_system(Self::respawn_food.in_base_set(PostSnake::CommandFlush))
+            .add_system(Self::check_snake_collides.in_base_set(PostSnake::CommandFlush))
+            .add_system(Self::update_position.in_base_set(PostAll::CommandFlush));
     }
 }
 
@@ -231,29 +251,31 @@ const Z_FOOD: f32 = 10.0;
 fn spawn_snake_body(mut commands: Commands, asset_server: Res<AssetServer>, pos: &Pos) {
     let body_image = asset_server.load("images/snake.png");
     commands
-        .spawn()
-        .insert(SnakeBody)
-        .insert(Age(0))
-        .insert(Pos { x: pos.x, y: pos.y })
-        .insert(Collision)
-        .insert_bundle(SpriteBundle {
-            texture: body_image,
-            transform: Transform::from_translation(Vec3::new(0.0, 0.0, Z_SNAKE)),
-            ..Default::default()
-        });
+        .spawn((
+            SnakeBody,
+            Age(0),
+            Pos { x: pos.x, y: pos.y },
+            Collision,
+            SpriteBundle {
+                texture: body_image,
+                transform: Transform::from_translation(Vec3::new(0.0, 0.0, Z_SNAKE)),
+                ..Default::default()
+            }
+        ));
 }
 
 fn spawn_food(commands: &mut Commands, asset_server: &Res<AssetServer>, pos: &Pos) {
     let food_image = asset_server.load("images/food.png");
     commands
-        .spawn()
-        .insert(Food)
-        .insert(Pos { x: pos.x, y: pos.y })
-        .insert_bundle(SpriteBundle {
-            texture: food_image,
-            transform: Transform::from_translation(Vec3::new(0.0, 0.0, Z_FOOD)),
-            ..Default::default()
-        });
+        .spawn((
+            Food,
+            Pos { x: pos.x, y: pos.y },
+            SpriteBundle {
+                texture: food_image,
+                transform: Transform::from_translation(Vec3::new(0.0, 0.0, Z_FOOD)),
+                ..Default::default()
+            }
+        ));
 }
 
 #[derive(Hash, PartialEq, Eq)]
@@ -290,11 +312,11 @@ impl TileFactory {
     pub fn spawn(&self, commands: &mut Commands, pos: Pos, tile: TileType) -> Entity {
         let material = self.materials.get(&tile).unwrap_or(&self.err_material);
 
-        let mut ent_cmd = commands.spawn_bundle(SpriteBundle {
+        let mut ent_cmd = commands.spawn(SpriteBundle {
             texture: material.clone(),
             ..Default::default()
         });
-        ent_cmd.insert_bundle((Tile, pos));
+        ent_cmd.insert((Tile, pos));
         if tile.has_collision() {
             ent_cmd.insert(Collision);
         }
